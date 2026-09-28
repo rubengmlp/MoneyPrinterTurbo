@@ -119,3 +119,49 @@ uv run pytest test/services/test_llm.py test/services/test_config.py \
 ```bash
 git push -u origin espanol
 ```
+
+## Descubrimiento de temas virales (`topics.py`)
+
+Herramienta para encontrar **temas ya validados por el mercado** (método
+outlier) y generar un manifiesto para producción en lote. No copia contenidos:
+extrae el **tema y el ángulo** de vídeos que están funcionando y el LLM escribe
+un guion propio.
+
+```bash
+# 1) Sin API key: expandir ideas con el autocompletado de Google
+uv run python topics.py --suggest "ai tools"
+
+# 2) Con la API key gratuita de YouTube Data API v3
+export YOUTUBE_API_KEY="tu-key"
+uv run python topics.py --niche ai-tools --regions US,GB --days 14 \
+    --limit 20 --out tasks.json
+
+# 3) Generar los vídeos del manifiesto
+uv run python cli.py --batch-file ./tasks.json --stop-at script
+
+# 4) Google Trends en ascenso (opcional; pytrends se instala al vuelo)
+uv run --with pytrends python topics.py --niche ai-tools --trends --out tasks.json
+```
+
+Qué hace:
+
+- **YouTube Trending** (`videos.list chart=mostPopular`, 1 unidad por región):
+  filtra Shorts y calcula velocidad (vistas/hora), engagement y frescura.
+- **Búsqueda por keyword** (`search.list`, 100 unidades de cupo): los vídeos
+  más vistos en los últimos N días para cada keyword del nicho.
+- **Autocompletado de Google** (gratis, sin key): expande ideas semilla.
+- **Google Trends** (`--trends`): consultas en ascenso de los últimos 7 días.
+- **Scoring**: `log10(vistas/hora) × engagement × frescura × bonus Shorts ×
+  multiplicador del nicho`; deduplica temas parecidos y descarta señales de
+  contenido no monetizable.
+- **Salida**: `tasks.json` listo para `cli.py --batch-file` (límite del CLI:
+  100 tareas y 1 MiB).
+
+Nichos predefinidos: `ai-tools` (recomendado), `business-cases`, `tech-news`,
+`science-education`. Lista con `--list-niches`; puedes pasar tus propias
+keywords con `--keywords "a,b,c"`.
+
+> Nota de monetización: YouTube desmonetiza el contenido genérico/repetitivo de
+> plantilla y la IA haciéndose pasar por experto en salud, legal, finanzas o
+> política. Usa la herramienta para inspiración de temas, añade siempre ángulo
+> propio y evita esos verticales con avatares de IA.
