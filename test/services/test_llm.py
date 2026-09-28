@@ -434,6 +434,7 @@ class TestLiteLLMProvider(unittest.TestCase):
                 "cheaperinference",
                 "ollama",
                 "claude_code",
+                "antigravity",
                 "oneapi",
                 "litellm",
                 "groq",
@@ -2109,6 +2110,190 @@ class TestClaudeCodeProvider(unittest.TestCase):
             response = llm._generate_response("write something")
         self.assertIn("upgrade", response.lower())
         self.assertIn(llm.CLAUDE_CODE_MIN_CLI_VERSION, response)
+
+
+class TestAntigravityProvider(unittest.TestCase):
+    """antigravity Provider 通过本机 agy CLI 调用 Google AI 订阅，不走 HTTP API。"""
+
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+        config.app["llm_provider"] = "antigravity"
+        config.app["antigravity_model_name"] = ""
+        config.app["antigravity_cli_path"] = ""
+        config.app["antigravity_timeout"] = ""
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+
+    @staticmethod
+    def _completed(stdout="", stderr="", returncode=0):
+        return types.SimpleNamespace(
+            stdout=stdout, stderr=stderr, returncode=returncode
+        )
+
+    @staticmethod
+    def _envelope(response="", status="SUCCESS", error=None):
+        payload = {
+            "conversation_id": "test-conversation",
+            "status": status,
+            "response": response,
+        }
+        if error:
+            payload["error"] = error
+        return json.dumps(payload)
+
+    # ------------------------------------------------------------- success
+    def test_successful_generation_returns_envelope_response(self):
+        """JSON envelope 中只有 response 是正文，其余元数据不应泄漏到脚本里。"""
+        with (
+            patch.object(llm.shutil, "which", return_value="/usr/local/bin/agy"),
+            patch.object(
+                llm.subprocess,
+                "run",
+                return_value=self._completed(stdout=self._envelope("Hola mundo")),
+            ) as run,
+        ):
+            self.assertEqual(llm._generate_response("write something"), "Hola mundo")
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], "/usr/local/bin/agy")
+        self.assertIn("--print", command)
+        self.assertEqual(command[command.index("--output-format") + 1], "json")
+        # 防止提示词里的 "/" 内容被当作斜杠命令展开。
+        self.assertIn("--disable-slash-commands", command)
+        # 子进程上限必须比 CLI 自身的 --print-timeout 略宽，留出错误输出时间。
+        self.assertEqual(
+            run.call_args.kwargs["timeout"], llm.ANTIGRAVITY_DEFAULT_TIMEOUT + 30
+        )
+
+    def test_prompt_carries_copywriter_system_constraints(self):
+        """headless 模式没有 system prompt 参数，写作约束必须前置到提示词。"""
+        with (
+            patch.object(llm.shutil, "which", return_value="/usr/local/bin/agy"),
+            patch.object(
+                llm.subprocess,
+                "run",
+                return_value=self._completed(stdout=self._envelope("ok")),
+            ) as run,
+        ):
+            llm._generate_response("write something")
+
+        command = run.call_args.args[0]
+        prompt_arg = command[command.index("--print") + 1]
+        self.assertTrue(prompt_arg.startswith(llm.ANTIGRAVITY_SYSTEM_PROMPT))
+        self.assertIn("write something", prompt_arg)
+
+    def test_model_is_forwarded_only_when_configured(self):
+        config.app["antigravity_model_name"] = "gemini-3.8-flash-high"
+        with (
+            patch.object(llm.shutil, "which", return_value="/usr/local/bin/agy"),
+            patch.object(
+                llm.subprocess,
+                "run",
+                return_value=self._completed(stdout=self._envelope("ok")),
+            ) as run,
+        ):
+            llm._generate_response("write something")
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--model") + 1], "gemini-3.8-flash-high")
+
+    def test_cli_falls_back_to_local_bin_install_path(self):
+        """官方安装脚本把 agy 放在 ~/.local/bin；PATH 未刷新时仍应能找到。"""
+        with (
+            patch.object(llm.shutil, "which", return_value=None),
+            patch.object(llm.os.path, "isfile", return_value=True),
+            patch.object(
+                llm.subprocess,
+                "run",
+                return_value=self._completed(stdout=self._envelope("ok")),
+            ),
+        ):
+            self.assertEqual(llm._generate_response("write something"), "ok")
+
+    # --------------------------------------------------------------- errors
+    def test_missing_cli_reports_install_hint(self):
+        with (
+            patch.object(llm.shutil, "which", return_value=None),
+            patch.object(llm.os.path, "isfile", return_value=False),
+        ):
+            response = llm._generate_response("write something")
+
+        self.assertIn("Antigravity CLI not found", response)
+        self.assertIn("antigravity.google/cli/install.sh", response)
+
+    def test_error_envelope_reports_reason_and_auth_hint(self):
+        with (
+            patch.object(llm.shutil, "which", return_value="/usr/local/bin/agy"),
+            patch.object(
+                llm.subprocess,
+                "run",
+                return_value=self._completed(
+                    stdout=self._envelope(
+                        status="ERROR", error="authentication required"
+                    ),
+                    returncode=1,
+                ),
+            ),
+        ):
+            response = llm._generate_response("write something")
+
+        self.assertIn("authentication required", response)
+        self.assertIn("run `agy` once interactively", response)
+
+    def test_timeout_is_reported(self):
+        config.app["antigravity_timeout"] = 12
+        with (
+            patch.object(llm.shutil, "which", return_value="/usr/local/bin/agy"),
+            patch.object(
+                llm.subprocess,
+                "run",
+                side_effect=llm.subprocess.TimeoutExpired(cmd="agy", timeout=12),
+            ),
+        ):
+            response = llm._generate_response("write something")
+
+        self.assertIn("timed out after 12s", response)
+
+    # -------------------------------------------------------- configuration
+    def test_conflicting_env_vars_are_stripped_but_project_is_kept(self):
+        polluted = {
+            "PATH": "/usr/bin",
+            "GEMINI_API_KEY": "secret",
+            "GOOGLE_API_KEY": "secret",
+            "GOOGLE_GENAI_API_KEY": "secret",
+            "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/service-account.json",
+            "GOOGLE_CLOUD_PROJECT": "my-project",
+        }
+
+        env, removed = llm.build_antigravity_env(polluted)
+
+        self.assertEqual(
+            set(removed),
+            {
+                "GEMINI_API_KEY",
+                "GOOGLE_API_KEY",
+                "GOOGLE_GENAI_API_KEY",
+                "GOOGLE_APPLICATION_CREDENTIALS",
+            },
+        )
+        self.assertEqual(env["GOOGLE_CLOUD_PROJECT"], "my-project")
+        self.assertEqual(env["PATH"], "/usr/bin")
+
+    def test_timeout_coercion_uses_provider_default(self):
+        self.assertEqual(
+            llm.coerce_subprocess_timeout(
+                None, "antigravity_timeout", llm.ANTIGRAVITY_DEFAULT_TIMEOUT
+            ),
+            llm.ANTIGRAVITY_DEFAULT_TIMEOUT,
+        )
+        self.assertEqual(
+            llm.coerce_subprocess_timeout(
+                "12", "antigravity_timeout", llm.ANTIGRAVITY_DEFAULT_TIMEOUT
+            ),
+            12.0,
+        )
 
 
 class TestRuntimeEnvironmentDetection(unittest.TestCase):

@@ -17,7 +17,8 @@ if TYPE_CHECKING:
     from app.models.schema import MaterialInfo, VideoParams
 
 
-DEFAULT_VOICE_NAME = "zh-CN-XiaoxiaoNeural-Female"
+# la-impresora fork: Spanish voice by default (Edge TTS, free, no API key).
+DEFAULT_VOICE_NAME = "es-ES-AlvaroNeural-Male"
 # 对应 webui/Main.py 的 VOICE_MODE_NONE 和 VOICE_MODE_UPLOAD。两端目前没有
 # 共享这些常量，因此在这里保留字面值并注明来源。
 UI_VOICE_MODE_NONE = "none"
@@ -319,7 +320,8 @@ Batch manifests:
         "--video-language",
         default=None,
         help=(
-            "script language code, such as zh-CN or en-US (default: auto-detect)"
+            "script language code, such as es-ES or en-US "
+            "(la-impresora fork default: es-ES; pass an empty value to auto-detect)"
         ),
     )
     content_group.add_argument(
@@ -574,7 +576,7 @@ Batch manifests:
         help=(
             "subtitle font filename inside resource/fonts "
             "(default: [ui].font_name from config.toml; "
-            "STHeitiMedium.ttc when unset)"
+            "BeVietnamPro-Bold.ttf when unset)"
         ),
     )
     subtitle_group.add_argument(

@@ -190,7 +190,8 @@ LOOMLOOM_VIDEO_MODEL_PRICES = (
 )
 DEFAULT_SUBTITLE_SETTINGS = {
     "subtitle_enabled": True,
-    "font_name": "MicrosoftYaHeiBold.ttc",
+    # la-impresora fork: Latin font with full Spanish accent coverage.
+    "font_name": "BeVietnamPro-Bold.ttf",
     "subtitle_position": "bottom",
     "subtitle_display_mode": "sentence",
     "subtitle_animation": "none",
@@ -666,6 +667,9 @@ def _initialize_session_state():
         saved_language=saved_ui_language,
         browser_locale=browser_locale,
         supported_languages=locales.keys(),
+        # la-impresora fork: Spanish is the fallback UI language when neither a
+        # saved preference nor the browser locale selects another language.
+        default_language="es",
     )
 
     defaults = {
@@ -4966,7 +4970,9 @@ def _render_script_settings(panel, params):
                 default_value=_saved_ui_choice(
                     "video_language",
                     [value for _, value in video_languages],
-                    "",
+                    # la-impresora fork: force Spanish scripts on fresh installs;
+                    # "Auto Detect" remains selectable in the dropdown.
+                    "es-ES",
                 ),
                 key="script_language_select",
                 format_func=lambda value: dict(

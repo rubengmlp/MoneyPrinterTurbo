@@ -79,6 +79,23 @@ CLAUDE_CODE_PRESERVED_ENV_VARS = (
     "ANTHROPIC_CONFIG_DIR",
     "CLAUDE_CONFIG_DIR",
 )
+# Antigravity CLI（`agy`）在本 fork 中通过 Google 订阅登录鉴权。headless 模式
+# 没有 --system-prompt 参数，因此把写作约束前置到提示词中；编码 agent 自带的
+# 长系统提示词会干扰脚本与关键词生成，必须先声明只做文案。
+ANTIGRAVITY_SYSTEM_PROMPT = (
+    "You are a concise copywriter. Follow the user's instructions and output "
+    "format exactly, and output nothing else. Do not use tools."
+)
+ANTIGRAVITY_DEFAULT_TIMEOUT = 300.0
+# 这些环境变量会让 CLI 改用 Gemini API Key 或 Vertex 凭据，绕过订阅登录并产生
+# 额外计费。GOOGLE_CLOUD_PROJECT 必须保留：Workspace / Code Assist 许可场景
+# 需要它定位项目；剔除凭据本身即可保证走订阅登录。
+ANTIGRAVITY_CONFLICTING_ENV_VARS = (
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GENAI_API_KEY",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+)
 
 
 def _is_conflicting_claude_code_env(name: str) -> bool:
@@ -92,16 +109,16 @@ def _is_conflicting_claude_code_env(name: str) -> bool:
     return name.startswith("CLAUDE_CODE_SKIP_") and name.endswith("_AUTH")
 
 
-def coerce_claude_code_timeout(value, config_key: str = "claude_code_timeout"):
+def coerce_subprocess_timeout(value, config_key: str, default: float) -> float:
     """
     把配置里的超时值解析成正的有限秒数。
 
-    TOML 既可能写成 `claude_code_timeout = 300`（int/float），也可能写成
-    `"300"`（字符串），因此不能直接调用 `strip()`。nan / inf 会让
-    `subprocess.run(timeout=...)` 永久阻塞，这里一并拒绝。
+    TOML 既可能写成 `300`（int/float），也可能写成 `"300"`（字符串），因此不能
+    直接调用 `strip()`。nan / inf 会让 `subprocess.run(timeout=...)` 永久阻塞，
+    这里一并拒绝。
     """
     if value is None:
-        return CLAUDE_CODE_DEFAULT_TIMEOUT
+        return default
 
     if isinstance(value, bool):
         # bool 是 int 的子类，但 True 秒显然不是用户想要的超时配置。
@@ -110,7 +127,7 @@ def coerce_claude_code_timeout(value, config_key: str = "claude_code_timeout"):
     if isinstance(value, str):
         text = value.strip()
         if not text:
-            return CLAUDE_CODE_DEFAULT_TIMEOUT
+            return default
         try:
             seconds = float(text)
         except ValueError:
@@ -127,6 +144,11 @@ def coerce_claude_code_timeout(value, config_key: str = "claude_code_timeout"):
     if seconds <= 0:
         raise ValueError(f"{config_key} must be greater than 0, got {value!r}")
     return seconds
+
+
+def coerce_claude_code_timeout(value, config_key: str = "claude_code_timeout"):
+    """Claude Code CLI 的超时配置（保留原签名，兼容既有调用方）。"""
+    return coerce_subprocess_timeout(value, config_key, CLAUDE_CODE_DEFAULT_TIMEOUT)
 
 
 def _resolve_provider_field_value(raw_value, default_value):
@@ -154,6 +176,22 @@ def build_claude_code_env(base_env=None):
     """
     env = dict(os.environ if base_env is None else base_env)
     removed = sorted(name for name in env if _is_conflicting_claude_code_env(name))
+    for name in removed:
+        env.pop(name, None)
+    return env, removed
+
+
+def build_antigravity_env(base_env=None):
+    """
+    构造只依赖 Google 订阅登录的子进程环境。
+
+    返回 (环境变量字典, 被剔除的变量名列表)。剔除 API Key / Vertex 凭据变量，
+    确保 `agy` 使用缓存的订阅登录而不是额外的按量计费通道。
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    removed = sorted(
+        name for name in env if name in ANTIGRAVITY_CONFLICTING_ENV_VARS
+    )
     for name in removed:
         env.pop(name, None)
     return env, removed
@@ -590,6 +628,125 @@ def _generate_response(prompt: str, app_config=None) -> str:
                 )
 
             return _normalize_text_response(payload.get("result"), llm_provider)
+
+        if adapter == "antigravity_cli":
+            # Google AI 订阅（AI Pro / Ultra）不签发 API Key：Gemini CLI 已于
+            # 2026-06-18 停止为该类订阅服务，官方替代品是 Antigravity CLI。
+            # 这里以 headless 模式调用本机已登录的 `agy`，由 CLI 完成鉴权，
+            # 只消费 JSON envelope 中的 response 文本。
+            configured_cli = (extra_values.get("cli_path") or "").strip() or "agy"
+            cli_path = shutil.which(configured_cli)
+            if not cli_path and os.path.isfile(configured_cli):
+                cli_path = configured_cli
+            if not cli_path:
+                # 官方安装脚本把二进制放在 ~/.local/bin；非交互式进程的 PATH
+                # 可能尚未包含该目录（例如安装后未重开终端）。
+                local_bin = os.path.expanduser("~/.local/bin/agy")
+                if os.path.isfile(local_bin):
+                    cli_path = local_bin
+            if not cli_path:
+                raise ValueError(
+                    f"{llm_provider}: Antigravity CLI not found "
+                    f"('{configured_cli}'), install it with "
+                    f"`curl -fsSL https://antigravity.google/cli/install.sh | bash` "
+                    f"or set {provider.config_key('cli_path')} in the config.toml file."
+                )
+
+            try:
+                timeout_seconds = coerce_subprocess_timeout(
+                    extra_values.get("timeout"),
+                    provider.config_key("timeout"),
+                    ANTIGRAVITY_DEFAULT_TIMEOUT,
+                )
+            except ValueError as timeout_error:
+                raise ValueError(f"{llm_provider}: {timeout_error}") from None
+
+            # headless 模式没有独立的 system prompt 参数，把写作约束前置到
+            # 提示词中；`--disable-slash-commands` 防止提示词中的 "/" 内容被
+            # 当作 CLI 斜杠命令展开。
+            command = [
+                cli_path,
+                "--print",
+                f"{ANTIGRAVITY_SYSTEM_PROMPT}\n\n{prompt}",
+                "--output-format",
+                "json",
+                "--print-timeout",
+                f"{math.ceil(timeout_seconds)}s",
+                "--disable-slash-commands",
+            ]
+            # 模型名留空时沿用 CLI 自己的默认模型（`agy models` 查看可用值），
+            # 避免硬编码的模型 ID 随订阅可用模型变化而失效。
+            if model_name:
+                command += ["--model", model_name]
+
+            cli_env, removed_env = build_antigravity_env()
+            if removed_env:
+                # 只记录变量名，不记录取值，避免把密钥写进日志。
+                logger.warning(
+                    f"{llm_provider}: ignoring conflicting environment variables "
+                    f"so the subscription login is used: {', '.join(removed_env)}"
+                )
+
+            logger.info(
+                f"invoking Antigravity CLI, model: {model_name or 'cli default'}"
+            )
+            # 与 Claude Code 相同：固定在一个临时空目录中执行，避免工作区
+            # 文件被 agent 读取后污染文案。
+            with tempfile.TemporaryDirectory() as work_dir:
+                try:
+                    completed = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        # 比 CLI 自身的 --print-timeout 多留一点时间，让 CLI
+                        # 有机会输出结构化的超时/错误信息。
+                        timeout=timeout_seconds + 30,
+                        cwd=work_dir,
+                        env=cli_env,
+                    )
+                except subprocess.TimeoutExpired:
+                    raise Exception(
+                        f"[{llm_provider}] Antigravity CLI timed out after "
+                        f"{timeout_seconds:.0f}s"
+                    )
+
+            # 失败同样会返回 JSON envelope（status 为 ERROR），只是退出码非 0。
+            # 因此先解析 stdout，拿不到 JSON 时才回退到退出码和 stderr。
+            stdout = (completed.stdout or "").strip()
+            try:
+                payload = json.loads(stdout) if stdout else None
+            except json.JSONDecodeError:
+                payload = None
+
+            if payload is None:
+                detail = (completed.stderr or stdout or "").strip()
+                if completed.returncode != 0:
+                    raise Exception(
+                        f"[{llm_provider}] Antigravity CLI exited with code "
+                        f"{completed.returncode}: {detail[:500]}"
+                    )
+                raise Exception(
+                    f'[{llm_provider}] returned an invalid response: "{detail[:500]}"'
+                )
+
+            status = str(payload.get("status") or "").strip().upper()
+            if status != "SUCCESS" or completed.returncode != 0:
+                reason = str(payload.get("error") or "").strip() or (
+                    f"Antigravity CLI exited with code {completed.returncode}"
+                )
+                # 非交互环境缺少登录会话时，CLI 会明确报 authentication required。
+                if "auth" in reason.lower() or "login" in reason.lower():
+                    reason += (
+                        " (run `agy` once interactively on this machine and sign "
+                        "in with the Google account that has the Gemini subscription)"
+                    )
+                raise Exception(
+                    f'[{llm_provider}] returned an error response: "{reason[:500]}"'
+                )
+
+            return _normalize_text_response(payload.get("response"), llm_provider)
 
         if adapter == "modelscope":
             content = ""

@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 
 
-DEFAULT_LLM_PROVIDER_ID = "moonshot"
+# 本 fork（la-impresora）默认使用 Google 订阅驱动 Antigravity CLI 生成文案，
+# 不消耗 API Key；如需恢复上游默认值可改回 "moonshot"。
+DEFAULT_LLM_PROVIDER_ID = "antigravity"
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +443,23 @@ LLM_PROVIDER_REGISTRY = (
         requires_model_name=False,
         extra_fields=(
             LLMProviderField("cli_path", "Claude CLI Path"),
+            LLMProviderField("timeout", "Timeout (seconds)", default_value="300"),
+        ),
+    ),
+    # Google 订阅（AI Pro / Ultra）不再通过 Gemini CLI 服务，官方替代品是
+    # Antigravity CLI（`agy`）。该项目不签发独立 API Key，鉴权由本机已登录的
+    # `agy` 会话完成；模型名留空即沿用 CLI 当前默认模型。
+    LLMProviderSpec(
+        "antigravity",
+        "Antigravity CLI (Google AI subscription)",
+        adapter="antigravity_cli",
+        requires_api_key=False,
+        show_api_key=False,
+        requires_base_url=False,
+        show_base_url=False,
+        requires_model_name=False,
+        extra_fields=(
+            LLMProviderField("cli_path", "Antigravity CLI Path"),
             LLMProviderField("timeout", "Timeout (seconds)", default_value="300"),
         ),
     ),

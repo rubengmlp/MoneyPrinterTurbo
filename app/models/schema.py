@@ -123,7 +123,7 @@ class VideoParams(BaseModel):
     custom_audio_file: Optional[str] = (
         None  # Custom audio file path, will ignore TTS and can still use Whisper subtitles
     )
-    video_language: Optional[str] = ""  # auto detect
+    video_language: Optional[str] = "es-ES"  # la-impresora fork: Spanish by default; "" = auto detect
 
     voice_name: Optional[str] = ""
     voice_volume: Optional[float] = 1.0
@@ -147,7 +147,7 @@ class VideoParams(BaseModel):
         "subtitle_animation", _SUBTITLE_ANIMATIONS, "none"
     )
     custom_position: float = config.ui.get("custom_position", 70.0)
-    font_name: Optional[str] = "STHeitiMedium.ttc"
+    font_name: Optional[str] = "BeVietnamPro-Bold.ttf"
     text_fore_color: Optional[str] = "#FFFFFF"
     text_background_color: Union[bool, str] = False
     rounded_subtitle_background: bool = False
@@ -164,7 +164,7 @@ class VideoParams(BaseModel):
 class SubtitleRequest(BaseModel):
     video_script: str
     video_language: Optional[str] = ""
-    voice_name: Optional[str] = "zh-CN-XiaoxiaoNeural-Female"
+    voice_name: Optional[str] = "es-ES-AlvaroNeural-Male"
     voice_volume: Optional[float] = 1.0
     voice_rate: Optional[float] = 1.2
     bgm_type: Optional[str] = "random"
@@ -177,7 +177,7 @@ class SubtitleRequest(BaseModel):
     subtitle_animation: SubtitleAnimation = _get_valid_ui_choice(
         "subtitle_animation", _SUBTITLE_ANIMATIONS, "none"
     )
-    font_name: Optional[str] = "STHeitiMedium.ttc"
+    font_name: Optional[str] = "BeVietnamPro-Bold.ttf"
     text_fore_color: Optional[str] = "#FFFFFF"
     text_background_color: Union[bool, str] = False
     rounded_subtitle_background: bool = False
@@ -191,7 +191,7 @@ class SubtitleRequest(BaseModel):
 class AudioRequest(BaseModel):
     video_script: str
     video_language: Optional[str] = ""
-    voice_name: Optional[str] = "zh-CN-XiaoxiaoNeural-Female"
+    voice_name: Optional[str] = "es-ES-AlvaroNeural-Male"
     voice_volume: Optional[float] = 1.0
     voice_rate: Optional[float] = 1.2
     bgm_type: Optional[str] = "random"
@@ -212,7 +212,7 @@ class VideoScriptParams:
     """
 
     video_subject: Optional[str] = "春天的花海"
-    video_language: Optional[str] = ""
+    video_language: Optional[str] = "es-ES"
     paragraph_number: int = Field(default=1, ge=1, le=10)
     video_script_prompt: str = Field(default="", max_length=2000)
     custom_system_prompt: str = Field(default="", max_length=8000)

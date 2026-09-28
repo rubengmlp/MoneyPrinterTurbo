@@ -33,7 +33,8 @@ class TestCli(unittest.TestCase):
         args = cli.parse_args(["--video-subject", "测试主题"])
         params = cli.build_video_params(args)
 
-        self.assertEqual(params.voice_name, "zh-CN-XiaoxiaoNeural-Female")
+        # la-impresora fork: Spanish Edge TTS voice by default.
+        self.assertEqual(params.voice_name, "es-ES-AlvaroNeural-Male")
 
     def test_video_fit_mode_defaults_to_cover_and_accepts_contain(self):
         default_params = cli.build_video_params(
@@ -1727,7 +1728,7 @@ class TestCli(unittest.TestCase):
 
         self.assertEqual(cm.exception.code, 0)
         help_text = output.getvalue()
-        self.assertIn("zh-CN-XiaoxiaoNeural-Female", help_text)
+        self.assertIn("es-ES-AlvaroNeural-Male", help_text)
         self.assertIn("current working directory", help_text)
         self.assertIn("Pipeline stages:", help_text)
         self.assertIn("Batch manifests:", help_text)
@@ -1818,7 +1819,7 @@ class TestCliUiDefaults(unittest.TestCase):
         with patch.dict(app_config.ui, {}, clear=True):
             params = cli.build_video_params(args)
 
-        self.assertEqual(params.font_name, "STHeitiMedium.ttc")
+        self.assertEqual(params.font_name, "BeVietnamPro-Bold.ttf")
         self.assertEqual(params.text_fore_color, "#FFFFFF")
         self.assertEqual(params.font_size, 60)
         self.assertFalse(params.text_background_color)
@@ -1857,8 +1858,8 @@ class TestCliUiDefaults(unittest.TestCase):
 
         self.assertEqual(params.font_size, 60)
         self.assertEqual(params.text_fore_color, "#FFFFFF")
-        self.assertEqual(params.font_name, "STHeitiMedium.ttc")
-        self.assertEqual(params.voice_name, "zh-CN-XiaoxiaoNeural-Female")
+        self.assertEqual(params.font_name, "BeVietnamPro-Bold.ttf")
+        self.assertEqual(params.voice_name, "es-ES-AlvaroNeural-Male")
 
     def test_saved_no_voice_mode_disables_tts(self):
         """

@@ -314,7 +314,7 @@ def test_invalid_saved_generation_settings_fall_back_without_breaking_webui():
     ):
         app = _new_app()
 
-    assert _widget_by_key(app.selectbox, "script_language_select").value == ""
+    assert _widget_by_key(app.selectbox, "script_language_select").value == "es-ES"
     assert _widget_by_key(app.slider, "paragraph_number_input").value == 10
     assert _widget_by_key(app.selectbox, "video_concat_mode_select").value == "random"
     assert _widget_by_key(app.selectbox, "video_transition_mode_select").value == (

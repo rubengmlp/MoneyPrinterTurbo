@@ -114,7 +114,11 @@ class TestConfigPersistence:
         ui_block = (project_root / "config.example.toml").read_text(
             encoding="utf-8"
         ).split("[ui]", 1)[1]
-        documented = set(re.findall(r"^#\s*([a-z_]+)\s*=", ui_block, re.MULTILINE))
+        # la-impresora fork: Spanish defaults ship active (uncommented) for a few
+        # keys, so accept both commented documentation and real assignments.
+        documented = set(
+            re.findall(r"^\s*#?\s*([a-z_]+)\s*=", ui_block, re.MULTILINE)
+        )
 
         schema_text = (project_root / "app/models/schema.py").read_text(
             encoding="utf-8"
