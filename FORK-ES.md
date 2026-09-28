@@ -134,7 +134,7 @@ uv run python topics.py --suggest "ai tools"
 # 2) Con la API key gratuita de YouTube Data API v3
 export YOUTUBE_API_KEY="tu-key"
 uv run python topics.py --niche ai-tools --regions US,GB --days 14 \
-    --limit 20 --out tasks.json
+    --limit 20 --voice en-US-AndrewNeural-Male --out tasks.json
 
 # 3) Generar los vídeos del manifiesto
 uv run python cli.py --batch-file ./tasks.json --stop-at script
@@ -145,10 +145,12 @@ uv run --with pytrends python topics.py --niche ai-tools --trends --out tasks.js
 
 Qué hace:
 
-- **YouTube Trending** (`videos.list chart=mostPopular`, 1 unidad por región):
-  filtra Shorts y calcula velocidad (vistas/hora), engagement y frescura.
 - **Búsqueda por keyword** (`search.list`, 100 unidades de cupo): los vídeos
-  más vistos en los últimos N días para cada keyword del nicho.
+  más vistos en los últimos N días para cada keyword del nicho. Se descartan
+  títulos en escrituras no latinas (spam de granjas) y clips de menos de 15 s.
+- **Tendencias generales** (`--trending`, desactivadas por defecto): música y
+  gaming dominan el ranking; si se activan, solo se conservan los vídeos cuyo
+  título menciona el nicho.
 - **Autocompletado de Google** (gratis, sin key): expande ideas semilla.
 - **Google Trends** (`--trends`): consultas en ascenso de los últimos 7 días.
 - **Scoring**: `log10(vistas/hora) × engagement × frescura × bonus Shorts ×

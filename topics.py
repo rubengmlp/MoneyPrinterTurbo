@@ -62,6 +62,10 @@ NICHE_PRESETS: dict[str, dict[str, Any]] = {
             "ai for work",
             "run local ai",
         ],
+        "match_tokens": [
+            "ai", "chatgpt", "gpt", "openai", "claude", "gemini", "llm",
+            "automation", "copilot", "agent", "prompt", "machine learning",
+        ],
         "cpm_multiplier": 1.6,
     },
     "business-cases": {
@@ -72,6 +76,10 @@ NICHE_PRESETS: dict[str, dict[str, Any]] = {
             "startup case study",
             "brand success story",
             "revenue breakdown",
+        ],
+        "match_tokens": [
+            "business", "company", "startup", "revenue", "profit", "brand",
+            "billion", "million", "money", "marketing",
         ],
         "cpm_multiplier": 1.8,
     },
@@ -84,6 +92,10 @@ NICHE_PRESETS: dict[str, dict[str, Any]] = {
             "software update explained",
             "ai model release",
         ],
+        "match_tokens": [
+            "ai", "tech", "gadget", "apple", "google", "microsoft", "iphone",
+            "android", "chip", "nvidia", "software", "app", "openai",
+        ],
         "cpm_multiplier": 1.4,
     },
     "science-education": {
@@ -95,9 +107,27 @@ NICHE_PRESETS: dict[str, dict[str, Any]] = {
             "history explained",
             "space facts",
         ],
+        "match_tokens": [
+            "science", "space", "physics", "brain", "psychology", "history",
+            "universe", "study", "how", "why", "explained",
+        ],
         "cpm_multiplier": 1.2,
     },
 }
+
+# Rangos Unicode de escrituras que delatan contenido no dirigido al público
+# anglosajón (spam de granjas de vídeos, principalmente). Los títulos con
+# acentos latinos (español, francés, alemán) usan códigos < 0x0400 y sí pasan.
+DISALLOWED_SCRIPT_RANGES = (
+    (0x0400, 0x04FF),  # cirílico
+    (0x0590, 0x05FF),  # hebreo
+    (0x0600, 0x06FF),  # árabe
+    (0x0900, 0x097F),  # devanagari
+    (0x0E00, 0x0E7F),  # tailandés
+    (0x3040, 0x30FF),  # hiragana/katakana
+    (0x3400, 0x9FFF),  # CJK
+    (0xAC00, 0xD7AF),  # hangul
+)
 
 # Palabras que delatan contenido no monetizable o ya saturado. El filtro es
 # deliberadamente conservador: solo descarta señales claras.
@@ -125,6 +155,7 @@ class Candidate:
     published_at: str = ""
     score: float = 0.0
     keyword: str = ""
+    language: str = ""
 
     @property
     def is_short(self) -> bool:
@@ -210,6 +241,96 @@ def is_monetizable_subject(subject: str) -> bool:
     """Descarta temas con señales claras de contenido no monetizable o spam."""
     lowered = subject.lower()
     return not any(re.search(pattern, lowered) for pattern in BANNED_TITLE_PATTERNS)
+
+
+def has_disallowed_script(text: str) -> bool:
+    """True si el título usa una escritura ajena al mercado objetivo."""
+    return any(
+        any(start <= ord(char) <= end for start, end in DISALLOWED_SCRIPT_RANGES)
+        for char in text or ""
+    )
+
+
+def title_matches_niche(title: str, tokens: Iterable[str]) -> bool:
+    """True si el título menciona algún token del nicho (límite de palabra).
+
+    Se usa para filtrar las tendencias generales de YouTube, que están dominadas
+    por música y gaming y de otro modo aplastarían a los resultados del nicho.
+    """
+    lowered = str(title or "").lower()
+    for token in tokens:
+        token = token.strip().lower()
+        if not token:
+            continue
+        pattern = r"\b" + re.escape(token) + r"\b"
+        if re.search(pattern, lowered):
+            return True
+    return False
+
+
+def resolve_match_tokens(preset: dict[str, Any], keywords: Iterable[str]) -> list[str]:
+    """Tokens de relevancia del preset; si el usuario pasa keywords propias, se
+    derivan de ellas para que el filtro siga funcionando."""
+    tokens = preset.get("match_tokens")
+    if tokens:
+        return list(tokens)
+    derived = []
+    for keyword in keywords:
+        for word in re.split(r"[^a-zA-Z0-9]+", str(keyword).lower()):
+            if len(word) >= 2:
+                derived.append(word)
+    return list(dict.fromkeys(derived))
+
+
+def is_usable_candidate(candidate: "Candidate") -> bool:
+    """Filtros de calidad mínimos antes de puntuar un candidato."""
+    if not candidate.subject or not is_monetizable_subject(candidate.subject):
+        return False
+    if has_disallowed_script(candidate.subject):
+        return False
+    # defaultLanguage/defaultAudioLanguage solo existe en parte de los vídeos;
+    # cuando está y no es inglés, se descarta (spam multilingüe).
+    if candidate.language and not candidate.language.lower().startswith("en"):
+        return False
+    # Los clips de menos de 15 s no dan material útil para un vídeo de 30-60 s.
+    if 0 < candidate.duration_seconds < 15:
+        return False
+    return True
+
+
+ENV_FILE_NAMES = (".env.topics", ".env")
+
+
+def load_env_file(directory: str | None = None) -> list[str]:
+    """Carga variables desde .env.topics / .env si no están ya en el entorno.
+
+    Evita tener que exportar la API key en cada terminal sin escribirla en el
+    repositorio: los archivos .env* están en .gitignore. Nunca imprime valores;
+    devuelve la lista de archivos usados para poder informar al usuario.
+    """
+    if os.environ.get("YOUTUBE_API_KEY"):
+        return []
+    base = directory or os.path.dirname(os.path.abspath(__file__))
+    for name in ENV_FILE_NAMES:
+        path = os.path.join(base, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    value = value.strip().strip("'\"")
+                    if key and value:
+                        os.environ.setdefault(key, value)
+        except OSError:
+            continue
+        if os.environ.get("YOUTUBE_API_KEY"):
+            return [name]
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -384,13 +505,22 @@ def candidate_from_video(item: dict, source: str, keyword: str = "") -> Candidat
         age_hours=age_hours,
         published_at=snippet.get("publishedAt", ""),
         keyword=keyword,
+        language=str(
+            snippet.get("defaultAudioLanguage")
+            or snippet.get("defaultLanguage")
+            or ""
+        ),
     )
 
 
 def rank_candidates(
-    candidates: Iterable[Candidate], cpm_multiplier: float, days_window: int
+    candidates: Iterable[Candidate],
+    cpm_multiplier: float,
+    days_window: int,
+    min_views: int = 0,
+    min_vph: float = 0.0,
 ) -> list[Candidate]:
-    """Puntúa, deduplica por tema normalizado y ordena de mayor a menor."""
+    """Puntúa, aplica umbrales de señal, deduplica y ordena de mayor a menor."""
     for candidate in candidates:
         # Normalizar aquí garantiza que la deduplicación funcione también cuando
         # los candidatos no vienen de la API (tests, datos importados, etc.).
@@ -399,8 +529,15 @@ def rank_candidates(
 
     best_by_subject: dict[str, Candidate] = {}
     for candidate in candidates:
-        if not candidate.subject or not is_monetizable_subject(candidate.subject):
+        if not is_usable_candidate(candidate):
             continue
+        # Google Trends no trae métricas de vídeo: sus umbrales no aplican.
+        if candidate.source != "trends":
+            if candidate.views < max(min_views, 0):
+                continue
+            vph = candidate.views / max(candidate.age_hours, 1.0)
+            if vph < max(min_vph, 0.0):
+                continue
         key = re.sub(r"[^a-z0-9]+", " ", candidate.subject.lower()).strip()
         key = " ".join(key.split()[:6])  # dedupe por primeras palabras significativas
         current = best_by_subject.get(key)
@@ -421,28 +558,35 @@ def build_manifest_tasks(
     aspect: str,
     paragraph_number: int,
     max_tasks: int = 100,
+    voice_name: str = "",
 ) -> list[dict[str, Any]]:
     """Genera objetos válidos para ``cli.py --batch-file``.
 
     El límite de 100 tareas y 1 MiB por manifiesto lo impone el propio CLI.
+    ``voice_name`` es opcional: si se indica, cada tarea lo fija (útil cuando el
+    idioma del guion no coincide con la voz guardada en config.toml).
     """
     tasks = []
     for candidate in list(candidates)[:max_tasks]:
-        tasks.append(
-            {
-                "video_subject": candidate.subject,
-                "video_language": language,
-                "video_aspect": aspect,
-                "paragraph_number": paragraph_number,
-            }
-        )
+        task = {
+            "video_subject": candidate.subject,
+            "video_language": language,
+            "video_aspect": aspect,
+            "paragraph_number": paragraph_number,
+        }
+        if voice_name:
+            task["voice_name"] = voice_name
+        tasks.append(task)
     return tasks
 
 
 def print_ranking(candidates: list[Candidate], top: int) -> None:
     if not candidates:
         return
-    header = f"{'#':>3}  {'score':>7}  {'vistas':>10}  {'vph':>8}  {'h':>6}  {'s':>4}  tema"
+    header = (
+        f"{'#':>3}  {'score':>7}  {'vistas':>10}  {'vph':>8}  {'h':>6}  "
+        f"{'s':>4}  {'origen':<8}  tema"
+    )
     print(header)
     print("-" * len(header))
     for index, candidate in enumerate(candidates[:top], start=1):
@@ -450,7 +594,8 @@ def print_ranking(candidates: list[Candidate], top: int) -> None:
         print(
             f"{index:>3}  {candidate.score:>7.2f}  {candidate.views:>10,}  "
             f"{vph:>8.0f}  {candidate.age_hours:>6.0f}  "
-            f"{'si' if candidate.is_short else 'no':>4}  {candidate.subject}"
+            f"{'si' if candidate.is_short else 'no':>4}  "
+            f"{candidate.source:<8}  {candidate.subject}"
         )
 
 
@@ -496,8 +641,32 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=MAX_SEARCH_KEYWORDS,
         help=f"keywords buscadas con search.list (100 unidades cada una; máx. {MAX_SEARCH_KEYWORDS})",
     )
+    parser.add_argument(
+        "--min-views",
+        type=int,
+        default=10_000,
+        help="vistas mínimas del candidato (0 desactiva; por defecto 10000)",
+    )
+    parser.add_argument(
+        "--min-vph",
+        type=float,
+        default=200.0,
+        help="velocidad mínima en vistas/hora (0 desactiva; por defecto 200)",
+    )
+    parser.add_argument(
+        "--trending",
+        action="store_true",
+        help="incluir tendencias generales de YouTube filtradas por tokens del nicho "
+        "(desactivadas por defecto: suelen ser música y gaming)",
+    )
     parser.add_argument("--trends", action="store_true", help="añadir Google Trends")
     parser.add_argument("--language", default="en-US", help="idioma del guion")
+    parser.add_argument(
+        "--voice",
+        default="",
+        help="voz TTS fijada en cada tarea (p. ej. en-US-AndrewNeural-Male); "
+        "vacío = usa la de config.toml",
+    )
     parser.add_argument("--aspect", default="9:16", help="formato de salida")
     parser.add_argument("--paragraphs", type=int, default=1, help="párrafos por guion")
     parser.add_argument("--out", default="tasks.json", help="manifiesto de salida")
@@ -513,7 +682,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    loaded_env_files = load_env_file()
     args = parse_args(argv)
+    if loaded_env_files:
+        print(
+            f"YOUTUBE_API_KEY cargada desde {', '.join(loaded_env_files)}",
+            file=sys.stderr,
+        )
 
     if args.list_niches:
         for niche_id, preset in NICHE_PRESETS.items():
@@ -539,6 +714,7 @@ def main(argv: list[str] | None = None) -> int:
     keywords = keywords[: max(0, min(args.max_search_keywords, MAX_SEARCH_KEYWORDS))]
     regions = [item.strip().upper() for item in args.regions.split(",") if item.strip()]
     cpm_multiplier = float(preset["cpm_multiplier"])
+    match_tokens = resolve_match_tokens(preset, keywords)
 
     candidates: list[Candidate] = []
 
@@ -562,18 +738,43 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
     else:
-        for region in regions:
-            try:
-                for item in fetch_trending(args.api_key, region):
-                    candidates.append(candidate_from_video(item, "trending"))
-            except RuntimeError as exc:
-                print(f"aviso: tendencias de {region} fallaron: {exc}", file=sys.stderr)
+        # Las tendencias generales están dominadas por música y gaming: solo se
+        # incorporan con --trending y si el título menciona el nicho. Los
+        # resultados de search.list ya son específicos del nicho por keyword.
+        if args.trending:
+            for region in regions:
+                try:
+                    kept = 0
+                    for item in fetch_trending(args.api_key, region):
+                        title = clean_title(
+                            (item.get("snippet", {}) or {}).get("title", "")
+                        )
+                        if title_matches_niche(title, match_tokens):
+                            candidates.append(candidate_from_video(item, "trending"))
+                            kept += 1
+                    print(
+                        f"tendencias {region}: {kept} vídeos relevantes al nicho",
+                        file=sys.stderr,
+                    )
+                except RuntimeError as exc:
+                    print(
+                        f"aviso: tendencias de {region} fallaron: {exc}",
+                        file=sys.stderr,
+                    )
         for keyword in keywords:
             for region in regions[:1]:  # search.list es caro: solo región principal
                 try:
                     for item in search_recent(
                         args.api_key, keyword, region, args.days
                     ):
+                        # El filtro de nicho se aplica al título YA limpiado: si
+                        # se aplica al crudo, "monday CRM | AI-powered work..."
+                        # pasa por el "AI" del sufijo que clean_title descarta.
+                        title = clean_title(
+                            (item.get("snippet", {}) or {}).get("title", "")
+                        )
+                        if not title_matches_niche(title, match_tokens):
+                            continue
                         candidates.append(
                             candidate_from_video(item, "search", keyword=keyword)
                         )
@@ -586,7 +787,13 @@ def main(argv: list[str] | None = None) -> int:
         print("sin candidatos: revisa la API key y la conexión", file=sys.stderr)
         return 1
 
-    ranked = rank_candidates(candidates, cpm_multiplier, args.days)
+    ranked = rank_candidates(
+        candidates,
+        cpm_multiplier,
+        args.days,
+        min_views=args.min_views,
+        min_vph=args.min_vph,
+    )
     print_ranking(ranked, args.limit)
 
     if not args.no_manifest:
@@ -596,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
             aspect=args.aspect,
             paragraph_number=max(1, min(args.paragraphs, 10)),
             max_tasks=min(args.limit, 100),
+            voice_name=args.voice,
         )
         write_manifest(args.out, tasks)
         print(
